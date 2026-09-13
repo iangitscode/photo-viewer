@@ -40,13 +40,24 @@
   const PRIMARY_FILE = 'composite.png';
 
   // The booth uploads the strip within a few seconds and encodes the GIF
-  // after it, so early misses are expected. This works out to 12 retries and
-  // about 69 s of waiting (plus request time) before a file is given up on.
+  // after it, so early misses are expected. The strip decides between the
+  // viewer and the error screen, so it gets the short budget: 12 retries and
+  // about 69 s of waiting (plus request time) before it is given up on.
   const RETRY_OPTIONS = Object.freeze({
     firstDelayMs: 1000,
     factor: 1.5,
     maxDelayMs: 8000,
     budgetMs: 75000,
+  });
+
+  // Every other file arrives in a viewer the guest is already looking at, so
+  // it can keep trying for longer: on a slow venue uplink the photos and the
+  // GIF can land minutes after the strip. 20 retries, about 3.8 minutes.
+  const SECONDARY_RETRY_OPTIONS = Object.freeze({
+    firstDelayMs: 1000,
+    factor: 1.5,
+    maxDelayMs: 15000,
+    budgetMs: 240000,
   });
 
   const S3_BUCKET_PATTERN = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
@@ -145,6 +156,7 @@
     SESSION_FILES,
     PRIMARY_FILE,
     RETRY_OPTIONS,
+    SECONDARY_RETRY_OPTIONS,
     isValidEvent,
     isValidUuid,
     parseSessionParams,
@@ -199,7 +211,8 @@
 
   // Loads one file into a fresh <img>, retrying on error. Plain <img> loads
   // need no CORS on the bucket, and S3's 403 (no ListBucket permission) and
-  // 404 both surface the same way: an error event.
+  // 404 both surface the same way: an error event. `urlFor` is called once per
+  // request.
   function loadWithRetry({ urlFor, schedule, isCurrent, later, onLoad, onGiveUp }) {
     let attempt = 0;
 
@@ -225,7 +238,7 @@
         attempt += 1;
         later(tryOnce, delay);
       };
-      img.src = urlFor(attempt);
+      img.src = urlFor();
     }
 
     tryOnce();
@@ -455,9 +468,14 @@
     }
 
     const carousel = createCarousel(els);
-    const schedule = buildRetrySchedule(RETRY_OPTIONS);
+    const schedules = {
+      primary: buildRetrySchedule(RETRY_OPTIONS),
+      secondary: buildRetrySchedule(SECONDARY_RETRY_OPTIONS),
+    };
     const timers = new Set();
     let generation = 0;
+    // Asks again for whatever the current load gave up on. Replaced per load.
+    let retryGivenUp = () => {};
 
     // Starting over bumps the generation so every retry loop, pending timer
     // and in-flight image from the previous run ignores itself.
@@ -479,28 +497,60 @@
         timers.add(id);
       };
 
-      SESSION_FILES.forEach((entry, order) => {
+      // Requests made per file this load. Only the very first is a plain URL;
+      // every later one, including after a give-up, gets a fresh ?attempt=N.
+      const requests = SESSION_FILES.map(() => 0);
+      const givenUp = new Set(); // SESSION_FILES indexes
+
+      function loadFile(order) {
+        const entry = SESSION_FILES[order];
+        const isPrimary = entry.file === PRIMARY_FILE;
         loadWithRetry({
-          urlFor: (attempt) => buildImageUrl(baseUrl, session, entry.file, attempt),
-          schedule,
+          urlFor: () => buildImageUrl(baseUrl, session, entry.file, requests[order]++),
+          schedule: isPrimary ? schedules.primary : schedules.secondary,
           isCurrent,
           later,
           onLoad(img) {
             // Files that beat the strip are added to the still-hidden
             // carousel, so the viewer opens with them already in place.
             carousel.add(order, entry, img);
-            if (entry.file === PRIMARY_FILE) {
+            if (isPrimary) {
               els.status.hidden = true;
               els.viewer.hidden = false;
               carousel.reveal();
             }
           },
           onGiveUp() {
-            if (entry.file === PRIMARY_FILE) showStatus(els, STATUS.failed);
+            givenUp.add(order);
+            if (isPrimary) showStatus(els, STATUS.failed);
           },
         });
-      });
+      }
+
+      SESSION_FILES.forEach((entry, order) => loadFile(order));
+
+      retryGivenUp = () => {
+        if (!isCurrent() || givenUp.size === 0) return;
+        // Without the strip there is no viewer to add files to; start over.
+        if (givenUp.has(SESSION_FILES.findIndex((entry) => entry.file === PRIMARY_FILE))) {
+          loadSession();
+          return;
+        }
+        const orders = Array.from(givenUp);
+        givenUp.clear();
+        orders.forEach(loadFile);
+      };
     }
+
+    // A guest who pockets their phone and looks again later is the likeliest
+    // to find a slow upload has finished since, so coming back to the page asks
+    // again for anything the retries had given up on.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') retryGivenUp();
+    });
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) retryGivenUp();
+    });
 
     els.retryButton.addEventListener('click', loadSession);
     loadSession();
