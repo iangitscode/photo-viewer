@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Your Photo Booth Photos</title>
+  <meta name="description" content="View and save the photos from your photo booth session.">
+  <!-- Every page here is a private guest link; keep them out of search results. -->
+  <meta name="robots" content="noindex">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0b0d">
+  <!-- An empty icon stops the browser requesting /favicon.ico, which is outside
+       this project site's /photo-viewer/ path and would just 404. -->
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <script src="config.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <section id="status" class="status">
+    <div class="status-inner" aria-live="polite">
+      <div id="status-spinner" class="spinner" hidden></div>
+      <h1 id="status-title" class="status-title">Your photos</h1>
+      <p id="status-text" class="status-text"></p>
+      <noscript><p class="status-text">This page needs JavaScript to show your photos.</p></noscript>
+      <button id="retry-button" class="retry-button" type="button" hidden>Try again</button>
+    </div>
+  </section>
+
+  <main id="viewer" class="viewer" hidden>
+    <div id="track" class="track" role="region" aria-roledescription="carousel" aria-label="Your photos" tabindex="0"></div>
+
+    <button id="prev-button" class="nav-button nav-prev" type="button" aria-label="Previous photo">
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button id="next-button" class="nav-button nav-next" type="button" aria-label="Next photo">
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+
+    <nav id="dots" class="dots" aria-label="Choose a photo"></nav>
+  </main>
+</body>
+</html>
