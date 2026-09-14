@@ -2,7 +2,7 @@
 
 A small static site that shows a guest the photos from their photo booth session.
 
-The photobooth app takes four photos, prints a strip, and uploads the session's files to a public-read S3 bucket. While the guest is still at the booth it shows a QR code for this site. They scan it, and this page shows their strip, the animated version if there is one, and the individual photos. They can swipe between them and long-press any image to save it.
+The photobooth app takes four photos, prints a strip, and uploads the session's files to a public-read S3 bucket. While the guest is still at the booth it shows a QR code for this site. They scan it, and this page shows their strip, the animated version if there is one, and the individual photos. They can swipe between them, and save the one in view with the download button in the top right (or by long-pressing it).
 
 It is plain HTML, CSS and JavaScript: no build step, no dependencies, no frameworks. It is hosted on GitHub Pages at <https://iangitscode.github.io/photo-viewer/>.
 
@@ -15,7 +15,7 @@ It is plain HTML, CSS and JavaScript: no build step, no dependencies, no framewo
 | S3 bucket name | `iangitscode-photobooth` | `bucket` in [`config.js`](config.js). Also update the bucket name in the bucket policy ARN (see [S3 setup](#s3-setup)). |
 | AWS region | `us-east-1` | `region` in [`config.js`](config.js). |
 | Image base URL (derived) | `https://iangitscode-photobooth.s3.us-east-1.amazonaws.com` | Built from `bucket` and `region`. To replace it entirely (CloudFront, a custom domain), set `baseUrlOverride` in [`config.js`](config.js). |
-| Site URL | `https://iangitscode.github.io/photo-viewer/` | Comes from the GitHub account (`iangitscode`) and repo name (`photo-viewer`), not from any file here. All asset paths are relative, so the site works under any path. The photobooth app's QR code must point at this same URL. |
+| Site URL | `https://iangitscode.github.io/photo-viewer/` | Comes from the GitHub account (`iangitscode`) and repo name (`photo-viewer`), not from any file here. All asset paths are relative, so the site works under any path. The photobooth app's QR code must point at this same URL, and the bucket's CORS rule must allow its origin (`https://iangitscode.github.io`). |
 
 ## URL contract
 
@@ -58,6 +58,7 @@ Files that never load are left out. That is how a 3-photo session, or a booth wi
 - **Loading.** A spinner shows until `composite.png` loads. The viewer then opens on the strip. If the strip still hasn't loaded when its retries run out, the page shows an error with a **Try again** button that restarts everything.
 - **Late files.** Every other file becomes a slide as soon as it loads, always at its fixed position. If it lands before the slide the guest is looking at, the view stays on their current slide with no jump. If the guest is mid-swipe, the new slide waits until scrolling stops.
 - **Navigation.** Swiping uses native CSS scroll-snap, one slide per swipe. Left and right arrow keys work too, and on devices with a mouse or trackpad there are prev/next buttons. The dots under the photos track the current slide, and tapping a dot jumps to that slide.
+- **Downloading.** The button in the top right saves the slide in view. On phones and tablets it opens the share sheet, whose **Save Image** puts the photo in the photo library; a plain download there goes to a files folder most guests never look in. Elsewhere, or where sharing files isn't supported, it downloads the file as `<event>-<first 8 characters of the uuid>-<file>`. Saving needs the file's bytes rather than an `<img>`, so this is the page's one `fetch`, and it needs the bucket's CORS rule (see [S3 setup](#s3-setup)). If it fails, a message suggests long-pressing (or right-clicking) the photo instead.
 - **Privacy.** The page has `noindex` set. Anyone with the link can view a session, so the bucket must not allow listing (see below). Without listing, the UUID can't be guessed.
 
 ## Files
@@ -66,7 +67,7 @@ Files that never load are left out. That is how a 3-photo session, or a booth wi
 | --- | --- |
 | `index.html` | Page markup: the status screen (message, loading, error) and the viewer. |
 | `style.css` | Mobile-first dark styles, the scroll-snap carousel and the dots. |
-| `app.js` | Validation, URL building and retry schedule (pure functions at the top), then the loader and carousel. |
+| `app.js` | Validation, URL building and retry schedule (pure functions at the top), then the loader, carousel and download button. |
 | `config.js` | Bucket, region and optional base-URL override. |
 | `.nojekyll` | Tells GitHub Pages to serve the files as-is instead of running Jekyll. |
 
@@ -108,10 +109,21 @@ This site relies on the following bucket configuration:
    ```
    Change `iangitscode-photobooth` if your bucket is named differently. Don't grant `s3:ListBucket`: without it, nobody can list sessions, and a missing object returns 403 instead of 404, which this site handles the same way.
 3. **Block Public Access.** In the bucket's **Permissions → Block public access** settings, turn off the two settings about bucket policies ("...through *new* public bucket policies" and "...through *any* public bucket policies"). If you don't, S3 will refuse the policy above. The two ACL settings can stay on, since nothing here uses ACLs.
-4. **No CORS configuration is needed.** Images load through plain `<img>` elements, not `fetch`/XHR.
+4. **CORS, for the download button.** Showing photos needs no CORS, since they load through plain `<img>` elements. The download button fetches the file instead, so under **Permissions → Cross-origin resource sharing (CORS)** add:
+   ```json
+   [
+     {
+       "AllowedMethods": ["GET"],
+       "AllowedOrigins": ["https://iangitscode.github.io"],
+       "AllowedHeaders": [],
+       "MaxAgeSeconds": 3000
+     }
+   ]
+   ```
+   The origin is the site's scheme and host, with no path. Add `"http://localhost:8000"` as well if you want the button to work when testing locally against the real bucket. Without this rule photos still show, but the download button only shows its fallback message.
 5. **Content types.** The uploader should set `Content-Type` (`image/png`, `image/gif`, `image/jpeg`). Browsers will usually display images anyway, but correct types make long-press saving and opening an image on its own behave properly.
 
-If you later put CloudFront in front of the bucket, set `baseUrlOverride`. Also make sure 403/404 responses aren't cached for long (set error caching minimum TTL to 0) or include the query string in the cache key, or the retries during the upload race will keep getting the cached error.
+If you later put CloudFront in front of the bucket, set `baseUrlOverride`. Also make sure 403/404 responses aren't cached for long (set error caching minimum TTL to 0) or include the query string in the cache key, or the retries during the upload race will keep getting the cached error. CloudFront also has to forward the `Origin` header (for example with the managed `CORS-S3Origin` origin request policy), or the download button's requests fail CORS.
 
 ## Testing locally
 

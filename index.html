@@ -30,6 +30,11 @@
   <main id="viewer" class="viewer" hidden>
     <div id="track" class="track" role="region" aria-roledescription="carousel" aria-label="Your photos" tabindex="0"></div>
 
+    <button id="download-button" class="download-button" type="button" aria-label="Download this photo" title="Download">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 4v11m-5-5l5 5 5-5M5 20h14" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <p id="download-message" class="download-message" role="status" hidden></p>
+
     <button id="prev-button" class="nav-button nav-prev" type="button" aria-label="Previous photo">
       <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>

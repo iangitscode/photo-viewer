@@ -23,9 +23,9 @@
   const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   // Everything a session *might* contain, in display order. The bucket only
-  // allows GetObject (no listing) and we deliberately avoid fetch/CORS, so the
-  // page just tries each file and leaves out the ones that never appear. That
-  // is how a 3-photo booth, or one without motion mode, shows fewer slides.
+  // allows GetObject (no listing) and slides load as plain <img> elements, so
+  // the page just tries each file and leaves out the ones that never appear.
+  // That is how a 3-photo booth, or one without motion mode, shows fewer slides.
   const SESSION_FILES = Object.freeze([
     Object.freeze({ file: 'composite.png', label: 'Photo strip' }),
     Object.freeze({ file: 'motion.gif', label: 'Animated photo strip' }),
@@ -152,6 +152,12 @@
     return Math.max(0, Math.min(slideCount - 1, index));
   }
 
+  // What a downloaded file is called on the guest's device. The event and the
+  // start of the UUID keep two sessions from the same party apart.
+  function downloadFileName(session, file) {
+    return `${session.event}-${session.uuid.slice(0, 8).toLowerCase()}-${file}`;
+  }
+
   const core = {
     SESSION_FILES,
     PRIMARY_FILE,
@@ -165,6 +171,7 @@
     buildRetrySchedule,
     insertionIndex,
     slideIndexFromScroll,
+    downloadFileName,
   };
 
   if (typeof module === 'object' && module.exports) {
@@ -244,8 +251,41 @@
     tryOnce();
   }
 
+  // Offers a file to the share sheet, on touch devices only: there "Save Image"
+  // puts it in the photo library, where a plain download lands in a files
+  // folder most guests never open. Resolves false when sharing isn't an option,
+  // so the caller downloads instead.
+  async function shareFile(blob, name) {
+    if (!window.matchMedia('(pointer: coarse)').matches) return false;
+    if (typeof navigator.canShare !== 'function') return false;
+    const file = new File([blob], name, { type: blob.type });
+    if (!navigator.canShare({ files: [file] })) return false;
+    try {
+      await navigator.share({ files: [file] });
+    } catch (err) {
+      // AbortError is the guest closing the sheet. Anything else is usually
+      // the tap having gone stale while the file downloaded, so fall back to a
+      // plain download.
+      if (err.name !== 'AbortError') return false;
+    }
+    return true;
+  }
+
+  function saveBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // Not revoked straight away: some browsers only start reading the blob
+    // after click() has returned.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
   function createCarousel({ track, dots, prevButton, nextButton }) {
-    const slides = []; // { order, label, el }, in display order
+    const slides = []; // { order, file, label, el }, in display order
     const pending = []; // loaded images waiting for the user to stop scrolling
 
     let currentIndex = 0;
@@ -275,7 +315,7 @@
         const index = insertionIndex(slides.map((slide) => slide.order), item.order);
         const el = buildSlide(item.entry, item.img);
         track.insertBefore(el, index < slides.length ? slides[index].el : null);
-        slides.splice(index, 0, { order: item.order, label: item.entry.label, el });
+        slides.splice(index, 0, { order: item.order, file: item.entry.file, label: item.entry.label, el });
       }
 
       // A slide inserted before the one in view would push it right. Putting
@@ -411,6 +451,12 @@
       renderDots();
     }
 
+    // The file of the slide in view, or null before any has loaded.
+    function currentFile() {
+      const slide = slides[currentIndex];
+      return slide ? slide.file : null;
+    }
+
     function onKeyDown(event) {
       if (track.offsetParent === null) return; // viewer hidden
       if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -434,7 +480,7 @@
     prevButton.addEventListener('click', () => step(-1));
     nextButton.addEventListener('click', () => step(1));
 
-    return { add, reveal, reset };
+    return { add, reveal, reset, currentFile };
   }
 
   function startApp() {
@@ -450,6 +496,8 @@
       dots: byId('dots'),
       prevButton: byId('prev-button'),
       nextButton: byId('next-button'),
+      downloadButton: byId('download-button'),
+      downloadMessage: byId('download-message'),
     };
 
     const session = parseSessionParams(window.location.search);
@@ -542,6 +590,41 @@
       };
     }
 
+    let downloadMessageTimer = 0;
+
+    function showDownloadMessage(text) {
+      clearTimeout(downloadMessageTimer);
+      els.downloadMessage.hidden = false;
+      els.downloadMessage.textContent = text;
+      downloadMessageTimer = setTimeout(() => { els.downloadMessage.hidden = true; }, 6000);
+    }
+
+    // Saves the slide in view. A link's `download` attribute is ignored for
+    // another origin's URL, so the file is fetched and saved from memory. This
+    // is the page's only fetch, and the only reason the bucket needs CORS.
+    async function downloadCurrent() {
+      const file = carousel.currentFile();
+      if (!file) return;
+      els.downloadButton.disabled = true;
+      els.downloadMessage.hidden = true;
+      try {
+        // no-store: the slide's <img> may have cached this file from a request
+        // sent without an Origin header, and that response fails a CORS check.
+        const response = await fetch(buildImageUrl(baseUrl, session, file, 0), { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        const name = downloadFileName(session, file);
+        if (!(await shareFile(blob, name))) saveBlob(blob, name);
+      } catch (err) {
+        console.error('Download failed:', err);
+        showDownloadMessage(window.matchMedia('(pointer: coarse)').matches
+          ? 'Couldn’t download this photo. Press and hold it to save it instead.'
+          : 'Couldn’t download this photo. Right-click it to save it instead.');
+      } finally {
+        els.downloadButton.disabled = false;
+      }
+    }
+
     // A guest who pockets their phone and looks again later is the likeliest
     // to find a slow upload has finished since, so coming back to the page asks
     // again for anything the retries had given up on.
@@ -553,6 +636,7 @@
     });
 
     els.retryButton.addEventListener('click', loadSession);
+    els.downloadButton.addEventListener('click', downloadCurrent);
     loadSession();
   }
 
